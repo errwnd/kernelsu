@@ -129,6 +129,10 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AK3
           cp build-config/anykernel.sh AK3/anykernel.sh
 
+          # Include the custom Mello ramdisk init file (display fix + root hiding)
+          mkdir -p AK3/ramdisk
+          cp build-config/ramdisk/init.mello-oof.rc AK3/ramdisk/init.mello-oof.rc
+
           BOOT_DIR=kernel/out/arch/arm64/boot
           if [ -f "$BOOT_DIR/Image.gz-dtb" ]; then
             cp "$BOOT_DIR/Image.gz-dtb" AK3/
