@@ -1,0 +1,29 @@
+# RMX2170 UDFPS Fix — init RC
+# /vendor/etc/init/rmx2170_fp_fix.rc
+
+# Set HAL shim wrap property before class main services start
+on init
+    setprop wrap.vendor.fps_hal.realme_sm7125 LD_PRELOAD=/odm/lib64/libshims_aidl_fingerprint_v4.oplus.so
+
+# After boot: fix sysfs perms, restart HAL with shim, start engine
+# Also stop Dolby DMS which busy-loops at 100% CPU (ds2 is disabled on this device)
+on property:sys.boot_completed=1
+    stop dms-hal-2-0
+    start rmx2170_fp_setup
+    restart vendor.fps_hal.realme_sm7125
+    start rmx2170_fp_engine
+
+service rmx2170_fp_setup /system/bin/sh /vendor/bin/rmx2170_fp_setup.sh
+    class late_start
+    disabled
+    oneshot
+    user root
+    group system
+    seclabel u:r:su:s0
+
+service rmx2170_fp_engine /vendor/bin/sjdude_fp_engine --daemon
+    class late_start
+    disabled
+    user root
+    group system input
+    seclabel u:r:su:s0

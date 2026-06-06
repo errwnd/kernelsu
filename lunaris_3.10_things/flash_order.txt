@@ -10,13 +10,14 @@ Flash order for Lunaris ROM on RMX2170 (SM7125)
    (Keymaster HAL interface fix + disable RealmeParts/KeyHandler
     to prevent lockscreen bootloop on Lunaris)
 
-4. rmx2170-udfps-fix-recovery-v1.2.zip
+4. rmx2170-udfps-fix-recovery-v1.3.zip
    (UDFPS fingerprint fix: sjdude_fp_engine, init RC, HAL shim wrap,
-    sysfs perms — finger works ~10s after boot unlock)
+    sysfs perms — finger works ~10s after boot unlock;
+    also stops Dolby DMS at boot — was busy-looping at 100% CPU)
 
 5. Reboot to system
 
 Notes:
-- rmx2170-udfps-fix-recovery-v1.1.zip is superseded by v1.2
+- rmx2170-udfps-fix-recovery-v1.1.zip and v1.2 are superseded by v1.3
 - Re-flash zips 3 & 4 after any ROM update (they are idempotent)
 - Do NOT flash Magisk udfps module on top — it conflicts with zip fix

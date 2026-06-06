@@ -1,0 +1,132 @@
+#!/sbin/sh
+# RMX2170 UDFPS Fix — Recovery Installer v1.3
+# Converts Magisk module "rmx2170_udfps_fix_v1.1_beta_superboost"
+# into a permanent system modification for OrangeFox/TWRP.
+#
+# Changes from v1.2:
+#  - Stop Dolby DMS HAL at boot (busy-loops at 100% CPU, ds2 disabled on device)
+#
+# Changes from v1.1:
+#  - Binary moved to /vendor/bin (system was full)
+#  - seclabel changed to u:r:su:s0 (shell context blocked by SELinux)
+#  - wrap property now set via init RC on-init trigger (build.prop unreliable)
+#  - cp used instead of install (more compatible with recovery environments)
+
+OUTFD=/proc/self/fd/$2
+ZIPFILE="$3"
+
+ui_print() {
+  echo -e "ui_print $1\nui_print" > "$OUTFD"
+}
+
+abort() {
+  ui_print ""
+  ui_print "ERROR: $1"
+  ui_print "Aborting."
+  exit 1
+}
+
+mount_rw() {
+  local PART="$1"
+  local MNT="$2"
+  mkdir -p "$MNT"
+  if [ -b /dev/block/mapper/$PART ]; then
+    blockdev --setrw /dev/block/mapper/$PART 2>/dev/null
+    mount -o rw /dev/block/mapper/$PART "$MNT" || abort "Failed to mount $PART"
+  elif [ -b /dev/block/by-name/$PART ]; then
+    mount -o rw /dev/block/by-name/$PART "$MNT" || abort "Failed to mount $PART (by-name)"
+  else
+    abort "Cannot find block device for: $PART"
+  fi
+}
+
+TMPDIR=/tmp/rmx2170_udfps_install
+mkdir -p "$TMPDIR"
+
+ui_print ""
+ui_print "========================================"
+ui_print " RMX2170 UDFPS Fix v1.3"
+ui_print " Recovery installer by itzsjdude"
+ui_print " Packaged for OrangeFox/TWRP"
+ui_print "========================================"
+ui_print ""
+
+unzip -o "$ZIPFILE" 'files/*' -d "$TMPDIR" || abort "Failed to extract files"
+
+# -------------------------------------------------------
+# Step 1: Patch /vendor/build.prop with fp properties
+# -------------------------------------------------------
+ui_print "[1/4] Patching vendor properties..."
+
+mount_rw vendor /mnt/_udfps_vendor
+
+BUILDPROP=/mnt/_udfps_vendor/build.prop
+[ -f "$BUILDPROP" ] || abort "vendor/build.prop not found"
+
+# Remove any previous installation
+sed -i '/# RMX2170 UDFPS Fix/,/^$/d' "$BUILDPROP" 2>/dev/null
+
+printf '\n# RMX2170 UDFPS Fix v1.3\nro.hardware.fp.udfps=true\nro.hardware.fp.side=false\npersist.vendor.fingerprint.sensor_type=optical\npersist.vendor.fingerprint.optical.sensorlocation=540:2120:163\npersist.vendor.fingerprint.optical.iconsize=163\n' >> "$BUILDPROP"
+
+ui_print "      Done."
+
+# -------------------------------------------------------
+# Step 2: Install init RC and setup script into /vendor
+# -------------------------------------------------------
+ui_print "[2/4] Installing boot service RC..."
+
+cp "$TMPDIR/files/rmx2170_fp_fix.rc" \
+   /mnt/_udfps_vendor/etc/init/rmx2170_fp_fix.rc \
+   || abort "Failed to install init RC"
+chmod 644 /mnt/_udfps_vendor/etc/init/rmx2170_fp_fix.rc
+
+mkdir -p /mnt/_udfps_vendor/bin
+cp "$TMPDIR/files/rmx2170_fp_setup.sh" \
+   /mnt/_udfps_vendor/bin/rmx2170_fp_setup.sh \
+   || abort "Failed to install setup script"
+chmod 755 /mnt/_udfps_vendor/bin/rmx2170_fp_setup.sh
+
+ui_print "      Done."
+
+# -------------------------------------------------------
+# Step 3: Install sjdude_fp_engine binary into /vendor/bin
+# (system partition is full on Lunaris for RMX2170)
+# -------------------------------------------------------
+ui_print "[3/4] Installing sjdude_fp_engine binary..."
+
+cp "$TMPDIR/files/sjdude_fp_engine" \
+   /mnt/_udfps_vendor/bin/sjdude_fp_engine \
+   || abort "Failed to install sjdude_fp_engine — check vendor partition space"
+chmod 755 /mnt/_udfps_vendor/bin/sjdude_fp_engine
+
+ui_print "      Done."
+
+umount /mnt/_udfps_vendor
+
+# -------------------------------------------------------
+# Step 4: Clear PiHooks pixel spoofing (conflicts with fp)
+# -------------------------------------------------------
+ui_print "[4/4] Clearing PiHooks property cache..."
+
+for prop in BRAND DEVICE DEVICE_INITIAL_SDK_INT FINGERPRINT ID \
+            MANUFACTURER MODEL PRODUCT RELEASE SDK_INT SECURITY_PATCH; do
+  rm -f /data/property/persist.sys.pihooks_$prop 2>/dev/null
+done
+
+ui_print "      Done."
+
+sync
+
+ui_print ""
+ui_print "Installation complete!"
+ui_print ""
+ui_print "Flash order:"
+ui_print "  1. Lunaris ROM"
+ui_print "  2. Lightning-McQueen KSU kernel"
+ui_print "  3. lunaris-rmx2170-bootfix.zip"
+ui_print "  4. This zip (udfps fix v1.3)"
+ui_print "  5. Reboot"
+ui_print ""
+ui_print "Fingerprint is usable ~10s after boot."
+ui_print "Dolby DMS busy-loop is suppressed at boot."
+ui_print ""
