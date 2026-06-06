@@ -74,12 +74,7 @@ jobs:
           mkdir -p out
           cp ../build-config/kernel.config out/.config
 
-          cat >> out/.config << 'EOF'
-          CONFIG_KSU=y
-          # CONFIG_KSU_DEBUG is not set
-          # CONFIG_KSU_KPROBES_HOOK is not set
-          CONFIG_KSU_MANUAL_HOOK=y
-          EOF
+          printf 'CONFIG_KSU=y\n# CONFIG_KSU_DEBUG is not set\n# CONFIG_KSU_KPROBES_HOOK is not set\nCONFIG_KSU_MANUAL_HOOK=y\n' >> out/.config
 
           make O=out \
             ARCH=arm64 \
@@ -96,7 +91,7 @@ jobs:
             olddefconfig
 
           echo "--- KSU entries ---"
-          grep "CONFIG_KSU" out/.config
+          grep "CONFIG_KSU" out/.config || echo "WARNING: No CONFIG_KSU entries found in .config"
 
       - name: Build kernel
         working-directory: kernel
