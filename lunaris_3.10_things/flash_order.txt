@@ -1,0 +1,22 @@
+Flash order for Lunaris ROM on RMX2170 (SM7125)
+================================================
+
+1. Lunaris ROM zip  (flash first, clean install)
+
+2. Lightning-McQueen-ksu-0723-20260602-v1.0.1.zip
+   (KernelSU kernel — required for root + fp fix)
+
+3. lunaris-rmx2170-bootfix.zip
+   (Keymaster HAL interface fix + disable RealmeParts/KeyHandler
+    to prevent lockscreen bootloop on Lunaris)
+
+4. rmx2170-udfps-fix-recovery-v1.2.zip
+   (UDFPS fingerprint fix: sjdude_fp_engine, init RC, HAL shim wrap,
+    sysfs perms — finger works ~10s after boot unlock)
+
+5. Reboot to system
+
+Notes:
+- rmx2170-udfps-fix-recovery-v1.1.zip is superseded by v1.2
+- Re-flash zips 3 & 4 after any ROM update (they are idempotent)
+- Do NOT flash Magisk udfps module on top — it conflicts with zip fix
