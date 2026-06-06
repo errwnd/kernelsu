@@ -1,0 +1,190 @@
+name: Build Mello Kernel + KernelSU-Next
+
+on:
+  workflow_dispatch:
+    inputs:
+      ksu_version:
+        description: 'KernelSU-Next version (next = latest, or tag like v3.2.0)'
+        required: false
+        default: 'next'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Kernel
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          sudo apt-get clean
+          df -h
+
+      - name: Install LLVM 15 apt repo
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-15 main" | sudo tee /etc/apt/sources.list.d/llvm15.list
+          sudo apt-get update -qq
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            git bc bison flex libssl-dev make \
+            libc6-dev libstdc++6 libncurses5-dev \
+            zip curl wget python3 ccache \
+            clang-15 lld-15 llvm-15 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+
+          # Make clang-15 tools available without version suffix
+          for tool in clang clang++ ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip llvm-readelf; do
+            bin_name="${tool}-15"
+            [ -f "/usr/bin/$bin_name" ] && sudo ln -sf "/usr/bin/$bin_name" "/usr/local/bin/$tool" || true
+          done
+          clang --version
+
+      - name: Integrate KernelSU-Next
+        run: |
+          KSU_VER="${{ inputs.ksu_version }}"
+          echo "Integrating KernelSU-Next (${KSU_VER})..."
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "${KSU_VER}"
+          echo "KernelSU-Next version: $(cat KernelSU-Next/kernel/include/ksu_version.h 2>/dev/null | grep -oP '(?<=VERSION_CODE )\d+' || echo 'unknown')"
+          ls -la drivers/kernelsu/
+
+      - name: Apply manual syscall hook patch
+        run: |
+          echo "Applying min-scope syscall hook patch..."
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/kernel_patches/main/syscall_hook/min_scope_syscall_hooks_v1.5.patch" \
+            | patch -p1 --fuzz=3 -N
+          echo "Patch applied successfully."
+
+      - name: Configure kernel
+        run: |
+          mkdir -p out
+          cp kernel.config out/.config
+
+          # Append KernelSU-Next configuration
+          cat >> out/.config << 'EOF'
+          CONFIG_KSU=y
+          # CONFIG_KSU_DEBUG is not set
+          # CONFIG_KSU_KPROBES_HOOK is not set
+          CONFIG_KSU_MANUAL_HOOK=y
+          EOF
+
+          make O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            olddefconfig
+
+          echo "--- KSU config entries in final .config ---"
+          grep -E "CONFIG_KSU" out/.config
+
+      - name: Build kernel
+        run: |
+          echo "Building with $(nproc) threads..."
+          make -j$(nproc) O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            2>&1 | tee build.log
+
+          echo "--- Boot image output ---"
+          ls -lh out/arch/arm64/boot/
+
+      - name: Upload build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 3
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AK3
+
+          # Use our device-specific anykernel.sh
+          cp anykernel.sh AK3/anykernel.sh
+
+          BOOT_DIR=out/arch/arm64/boot
+
+          # Copy kernel image — prefer Image.gz-dtb (DTB appended), fall back to Image.gz
+          if [ -f "$BOOT_DIR/Image.gz-dtb" ]; then
+            cp "$BOOT_DIR/Image.gz-dtb" AK3/
+          elif [ -f "$BOOT_DIR/Image-dtb" ]; then
+            cp "$BOOT_DIR/Image-dtb" AK3/
+          elif [ -f "$BOOT_DIR/Image.gz" ]; then
+            cp "$BOOT_DIR/Image.gz" AK3/
+            [ -f "$BOOT_DIR/dtb.img" ] && cp "$BOOT_DIR/dtb.img" AK3/ || true
+          else
+            echo "ERROR: No kernel image found in $BOOT_DIR"
+            exit 1
+          fi
+
+          rm -rf AK3/.git AK3/.github AK3/README.md AK3/LICENCE AK3/push.sh
+
+          BUILD_DATE=$(date +%Y%m%d-%H%M)
+          ZIP_NAME="Mello-KSUNext-RMX2170-${BUILD_DATE}.zip"
+          (cd AK3 && zip -r9 "../${ZIP_NAME}" .)
+
+          echo "ZIP_NAME=${ZIP_NAME}" >> "$GITHUB_ENV"
+          echo "BUILD_DATE=${BUILD_DATE}" >> "$GITHUB_ENV"
+          echo "Packaged: ${ZIP_NAME} ($(du -sh ${ZIP_NAME} | cut -f1))"
+
+      - name: Upload flashable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mello-KSUNext-RMX2170
+          path: ${{ env.ZIP_NAME }}
+          retention-days: 14
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ksu-next-build-${{ github.run_number }}
+          name: "Mello + KernelSU-Next (Build ${{ github.run_number }})"
+          body: |
+            ## Mello Kernel with KernelSU-Next
+
+            | Info | Value |
+            |------|-------|
+            | Device | Realme 7 Pro (RMX2170) |
+            | Base kernel | 4.14.x (mello-kernel/kernel_realme_sm7125 @ roms) |
+            | KernelSU-Next | ${{ inputs.ksu_version }} |
+            | Built | ${{ env.BUILD_DATE }} |
+
+            ### Flash instructions
+            1. Boot into TWRP
+            2. Flash the ZIP
+            3. Install latest KernelSU-Next Manager APK from [releases](https://github.com/KernelSU-Next/KernelSU-Next/releases)
+            4. Reboot
+
+            > ⚠️ Make sure you have a TWRP backup before flashing.
+          files: ${{ env.ZIP_NAME }}
+          draft: false
+          prerelease: false
