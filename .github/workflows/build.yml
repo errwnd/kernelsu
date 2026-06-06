@@ -17,10 +17,10 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout kernel source
+      - name: Checkout build config (this repo)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          path: build-config
 
       - name: Free disk space
         run: |
@@ -28,14 +28,17 @@ jobs:
           sudo apt-get clean
           df -h
 
-      - name: Install LLVM 15 apt repo
+      - name: Clone Mello kernel source
+        run: |
+          git clone --branch roms --depth=1 \
+            https://github.com/mello-kernel/kernel_realme_sm7125 kernel
+          echo "Kernel source cloned."
+
+      - name: Install LLVM 15
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
           echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-15 main" | sudo tee /etc/apt/sources.list.d/llvm15.list
           sudo apt-get update -qq
-
-      - name: Install build dependencies
-        run: |
           sudo apt-get install -y --no-install-recommends \
             git bc bison flex libssl-dev make \
             libc6-dev libstdc++6 libncurses5-dev \
@@ -44,7 +47,6 @@ jobs:
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
-          # Make clang-15 tools available without version suffix
           for tool in clang clang++ ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip llvm-readelf; do
             bin_name="${tool}-15"
             [ -f "/usr/bin/$bin_name" ] && sudo ln -sf "/usr/bin/$bin_name" "/usr/local/bin/$tool" || true
@@ -52,26 +54,26 @@ jobs:
           clang --version
 
       - name: Integrate KernelSU-Next
+        working-directory: kernel
         run: |
           KSU_VER="${{ inputs.ksu_version }}"
           echo "Integrating KernelSU-Next (${KSU_VER})..."
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "${KSU_VER}"
-          echo "KernelSU-Next version: $(cat KernelSU-Next/kernel/include/ksu_version.h 2>/dev/null | grep -oP '(?<=VERSION_CODE )\d+' || echo 'unknown')"
           ls -la drivers/kernelsu/
 
       - name: Apply manual syscall hook patch
+        working-directory: kernel
         run: |
-          echo "Applying min-scope syscall hook patch..."
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/kernel_patches/main/syscall_hook/min_scope_syscall_hooks_v1.5.patch" \
             | patch -p1 --fuzz=3 -N
-          echo "Patch applied successfully."
+          echo "Patch applied."
 
       - name: Configure kernel
+        working-directory: kernel
         run: |
           mkdir -p out
-          cp kernel.config out/.config
+          cp ../build-config/kernel.config out/.config
 
-          # Append KernelSU-Next configuration
           cat >> out/.config << 'EOF'
           CONFIG_KSU=y
           # CONFIG_KSU_DEBUG is not set
@@ -93,12 +95,12 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             olddefconfig
 
-          echo "--- KSU config entries in final .config ---"
-          grep -E "CONFIG_KSU" out/.config
+          echo "--- KSU entries ---"
+          grep "CONFIG_KSU" out/.config
 
       - name: Build kernel
+        working-directory: kernel
         run: |
-          echo "Building with $(nproc) threads..."
           make -j$(nproc) O=out \
             ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -111,9 +113,7 @@ jobs:
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            2>&1 | tee build.log
-
-          echo "--- Boot image output ---"
+            2>&1 | tee ../build.log
           ls -lh out/arch/arm64/boot/
 
       - name: Upload build log (always)
@@ -127,13 +127,9 @@ jobs:
       - name: Package with AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AK3
+          cp build-config/anykernel.sh AK3/anykernel.sh
 
-          # Use our device-specific anykernel.sh
-          cp anykernel.sh AK3/anykernel.sh
-
-          BOOT_DIR=out/arch/arm64/boot
-
-          # Copy kernel image — prefer Image.gz-dtb (DTB appended), fall back to Image.gz
+          BOOT_DIR=kernel/out/arch/arm64/boot
           if [ -f "$BOOT_DIR/Image.gz-dtb" ]; then
             cp "$BOOT_DIR/Image.gz-dtb" AK3/
           elif [ -f "$BOOT_DIR/Image-dtb" ]; then
@@ -142,8 +138,7 @@ jobs:
             cp "$BOOT_DIR/Image.gz" AK3/
             [ -f "$BOOT_DIR/dtb.img" ] && cp "$BOOT_DIR/dtb.img" AK3/ || true
           else
-            echo "ERROR: No kernel image found in $BOOT_DIR"
-            exit 1
+            echo "ERROR: No kernel image found"; exit 1
           fi
 
           rm -rf AK3/.git AK3/.github AK3/README.md AK3/LICENCE AK3/push.sh
@@ -154,7 +149,7 @@ jobs:
 
           echo "ZIP_NAME=${ZIP_NAME}" >> "$GITHUB_ENV"
           echo "BUILD_DATE=${BUILD_DATE}" >> "$GITHUB_ENV"
-          echo "Packaged: ${ZIP_NAME} ($(du -sh ${ZIP_NAME} | cut -f1))"
+          ls -lh "${ZIP_NAME}"
 
       - name: Upload flashable ZIP
         uses: actions/upload-artifact@v4
@@ -179,12 +174,10 @@ jobs:
             | Built | ${{ env.BUILD_DATE }} |
 
             ### Flash instructions
-            1. Boot into TWRP
-            2. Flash the ZIP
-            3. Install latest KernelSU-Next Manager APK from [releases](https://github.com/KernelSU-Next/KernelSU-Next/releases)
+            1. Boot into OrangeFox
+            2. Flash this ZIP
+            3. Install latest KernelSU-Next Manager APK
             4. Reboot
 
-            > ⚠️ Make sure you have a TWRP backup before flashing.
+            > Back up your boot partition before flashing.
           files: ${{ env.ZIP_NAME }}
-          draft: false
-          prerelease: false
